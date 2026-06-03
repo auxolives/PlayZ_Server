@@ -1,5 +1,5 @@
 // RPC_PLAYZ_AC_CAMERA_REQUEST / RPC_PLAYZ_AC_CAMERA_RESPONSE are declared in
-// Archives/PlayZ_ZZ_Legacy/PlayZAntiCheatClient/scripts/3_Game/PlayZAntiCheatClient_Shared.c
+// PlayZ_Client/PlayZAntiCheatClient/scripts/3_Game/PlayZAntiCheatClient_Shared.c
 // and made available here via CfgPatches requiredAddons = { "PlayZAntiCheatClient" }.
 
 static const string PLAYZ_AC_PROFILE_DIR   = "$profile:PlayZ/";

@@ -1,7 +1,7 @@
 // Server-side half of PlayZ AntiCheat's camera spot-check.
 //
 // Client-side request handling (RPC_PLAYZ_AC_CAMERA_REQUEST -> response) lives in
-// Archives/PlayZ_ZZ_Legacy/PlayZAntiCheatClient/scripts/4_World/PlayerBase.c and ships to both sides.
+// PlayZ_Client/PlayZAntiCheatClient/scripts/4_World/PlayerBase.c and ships to both sides.
 // This file only handles the RESPONSE that comes back to the server and forwards
 // it to the player monitor.
 //

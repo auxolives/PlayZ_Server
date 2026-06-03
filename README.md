@@ -29,7 +29,7 @@ Clients only receive the `-mod=` chain. The `-servermod=` chain is never adverti
 ## Current sub-mods
 
 - `PlayZLogs` — server-side telemetry/logging (damage, people, vehicles, weather, base-building, actions, admin, AI engagement).
-- `PlayZAntiCheat` — ballistic anomaly detection and server-side validation hooks.
+- `PlayZAntiCheat` — ballistic anomaly detection and camera spot-check. Requires `PlayZ_Client/PlayZAntiCheatClient` on `-mod=` (RPC stub).
 - `PlayZCF` — CFTools / GameLabs integration. Server-only by construction: every file is wrapped in `#ifdef GAMELABS` and the mod lists `"GameLabs_Scripts"` (server-only) in `requiredAddons[]`. Hooks into `GLProcessKill`, `ActionManagerServer.OnActionEnd`, `PluginAdminLog`, `MissionServer.OnInit`, and `EEInit`/`EEDelete` on a curated set of `House` / `ItemBase` types to register GameLabs map events and upstream PlayerDeath / ItemInteract payloads.
 
 ## Adding a new server-only sub-mod
