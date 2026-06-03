@@ -1,0 +1,18 @@
+{
+	"EnableBallisticChecks": 1,
+	"EnableCameraChecks": 1,
+	"LogToServerConsole": 1,
+	"LogToRPT": 1,
+	"BallisticSuspiciousDistance": 800.0,
+	"BallisticMaxObstacleCount": 1,
+	"BallisticRaycastRadius": 0.05,
+	"CameraMaxSeparation": 35.0,
+	"CameraMaxServerDriftMeters": 20.0,
+	"CameraMaxPlausibleSeparation": 300.0,
+	"CameraRespawnGraceSeconds": 20,
+	"CameraConsecutiveAnomaliesToAlert": 2,
+	"CameraSampleIntervalSeconds": 8,
+	"CameraResponseTimeoutSeconds": 12,
+	"DiscordWebhookUrl": "",
+	"DiscordCameraWebhookUrl": ""
+}
