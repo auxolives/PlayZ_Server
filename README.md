@@ -21,7 +21,7 @@ Some server features must trigger code on the client — e.g. to sample `GetCurr
 Dedicated server launch:
 
 ```text
-DayZServer_x64.exe -mod="@PlayZ_Core;..." -servermod="@PlayZLogs;@..." -config=serverDZ.cfg
+DayZServer_x64.exe -mod="@PlayZCore;..." -servermod="@PlayZLogs;@..." -config=serverDZ.cfg
 ```
 
 Clients only receive the `-mod=` chain. The `-servermod=` chain is never advertised to clients, never downloaded, and never compiled into the client VM.
