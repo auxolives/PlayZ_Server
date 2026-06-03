@@ -41,14 +41,15 @@ modded class MissionServer
 			data.Init(weather);
 			data.scenario = PlayZConfig.m_CurrentScenarioName;
 			data.snowfall = weather.GetSnowfall().GetActual();
-			
-			ChernarusPlusData cpd = ChernarusPlusData.Cast(GetGame().GetMission().GetWorldData());
-			if (cpd && cpd.m_CurrentScenario)
+
+			// Vol fog ranges: read PlayZConfig (synced by PlayZWeather on server), not world data.
+			// m_CurrentScenario lives on modded SakhalData/ChernarusPlusData in PlayZWeather only.
+			if (PlayZConfig.m_CurrentScenarioName != "")
 			{
-				data.vfdMin = cpd.m_CurrentScenario.m_VolFogDistanceMin;
-				data.vfdMax = cpd.m_CurrentScenario.m_VolFogDistanceMax;
-				data.vfhMin = cpd.m_CurrentScenario.m_VolFogHeightMin;
-				data.vfhMax = cpd.m_CurrentScenario.m_VolFogHeightMax;
+				data.vfdMin = PlayZConfig.m_LastVolFogDistTarget;
+				data.vfdMax = PlayZConfig.m_LastVolFogDistTarget;
+				data.vfhMin = PlayZConfig.m_LastVolFogHeightTarget;
+				data.vfhMax = PlayZConfig.m_LastVolFogHeightTarget;
 			}
 			
 			PlayZLogger.LogWeather("WeatherSnapshot", data);
