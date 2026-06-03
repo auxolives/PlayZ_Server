@@ -1,0 +1,19 @@
+# Pack / local tooling
+*.pbo
+*.bisign
+*.bikey
+temp/
+.packing.log
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+credentials.json
+secrets/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
