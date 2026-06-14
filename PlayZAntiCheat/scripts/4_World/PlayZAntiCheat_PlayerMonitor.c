@@ -1,15 +1,80 @@
 class PlayZAntiCheatPlayerState
 {
-	vector LastPlayerPosition;     // server-side snapshot at time of last response
-	vector LastCameraPosition;     // client-side camera at time of last response
-	vector LastClientPlayerPos;    // client-side player pos at time of last response
+	vector LastPlayerPosition;
+	vector LastCameraPosition;
+	vector LastClientPlayerPos;
+	vector LastServerSamplePos;
+	vector LastClientSamplePos;
 	float LastRequestTime;
 	float LastResponseTime;
 	float LastAlertTime;
+	float LastMovementAlertTime;
+	float LastKeybindAlertTime;
+	float LastMovementSampleTime;
 	float NextCheckTime;
-	float SpawnGraceUntil;         // server time until which samples are ignored
-	int   ConsecutiveAnomalies;    // N-in-a-row anomalies before alert fires
-	bool  PendingCameraResponse;
+	float SpawnGraceUntil;
+	float StartScreenExitGraceUntil;
+	float EngineTeleportGraceUntil;
+	int ConsecutiveAnomalies;
+	int SpeedConsecutiveAnomalies;
+	int TeleportConsecutiveAnomalies;
+	bool PendingCameraResponse;
+	bool WasInStartScreen;
+	bool KickPending;
+};
+
+class PlayZAntiCheatKickService
+{
+	static void KickPlayer(PlayerBase player, string detectionTag)
+	{
+		if (!player || !GetGame() || !GetGame().IsServer())
+			return;
+
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		if (!cfg.EnableMovementKick)
+			return;
+
+		if (PlayZAntiCheatUtils.IsPlayerExcluded(player))
+			return;
+
+		PlayZAntiCheatPlayerState state = player.GetPlayZACState();
+		if (state && state.KickPending)
+			return;
+
+		if (state)
+			state.KickPending = true;
+
+		string playerName = PlayZAntiCheatUtils.GetIdentityName(player);
+		string playerId = PlayZAntiCheatUtils.GetIdentityId(player);
+		PlayZAntiCheatLogger.Info(string.Format("Kicking player %1 (%2) | reason=%3 | detection=%4", playerName, playerId, PLAYZ_AC_MOVEMENT_KICK_REASON, detectionTag));
+
+		SendKickMessageRpc(player, PLAYZ_AC_MOVEMENT_KICK_REASON);
+
+		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(ExecuteKick, 500, false, player);
+	}
+
+	protected static void SendKickMessageRpc(PlayerBase player, string reason)
+	{
+		if (!player || reason == "")
+			return;
+
+		ScriptRPC rpc = new ScriptRPC();
+		rpc.Write(reason);
+		rpc.Send(player, RPC_PLAYZ_AC_KICK_MESSAGE, true, NULL);
+	}
+
+	static void ExecuteKick(PlayerBase player)
+	{
+		if (!player || !GetGame() || !GetGame().IsServer())
+			return;
+
+		PlayerIdentity identity = player.GetIdentity();
+		if (!identity)
+			return;
+
+		// MissionServer lives in 5_Mission — queue uid for mission-module disconnect handling.
+		PlayZAntiCheatKickQueue.Enqueue(identity.GetId());
+	}
 };
 
 class PlayZAntiCheatPlayerMonitor
@@ -46,17 +111,39 @@ class PlayZAntiCheatPlayerMonitor
 		GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.RequestSamples, 500, true);
 	}
 
+	protected void ResetMovementCounters(PlayZAntiCheatPlayerState state)
+	{
+		if (!state)
+			return;
+
+		state.SpeedConsecutiveAnomalies = 0;
+		state.TeleportConsecutiveAnomalies = 0;
+	}
+
+	protected void ResetMovementBaselines(PlayZAntiCheatPlayerState state, vector serverPos, vector clientPos, float now)
+	{
+		if (!state)
+			return;
+
+		state.LastServerSamplePos = PlayZAntiCheatUtils.FlattenHorizontal(serverPos);
+		state.LastClientSamplePos = PlayZAntiCheatUtils.FlattenHorizontal(clientPos);
+		state.LastMovementSampleTime = now;
+	}
+
 	void OnPlayerConnected(PlayerBase player)
 	{
 		PlayZAntiCheatPlayerState state = EnsureState(player);
 		if (!state)
 			return;
 
-		// Grace window while the client finishes loading and the camera settles.
 		int graceSeconds = Math.Max(PlayZAntiCheatConfig.Get().CameraRespawnGraceSeconds, 0);
 		state.SpawnGraceUntil = GetGame().GetTime() + graceSeconds * 1000;
 		state.ConsecutiveAnomalies = 0;
 		state.PendingCameraResponse = false;
+		state.LastMovementSampleTime = 0;
+		state.WasInStartScreen = false;
+		state.KickPending = false;
+		ResetMovementCounters(state);
 	}
 
 	void OnPlayerDeath(PlayerBase player)
@@ -65,11 +152,29 @@ class PlayZAntiCheatPlayerMonitor
 		if (!state)
 			return;
 
-		// Re-apply grace when death transitions camera ownership/state.
 		int graceSeconds = Math.Max(PlayZAntiCheatConfig.Get().CameraRespawnGraceSeconds, 0);
 		state.SpawnGraceUntil = GetGame().GetTime() + graceSeconds * 1000;
 		state.ConsecutiveAnomalies = 0;
 		state.PendingCameraResponse = false;
+		state.LastMovementSampleTime = 0;
+		ResetMovementCounters(state);
+	}
+
+	void OnEngineTeleport(PlayerBase player)
+	{
+		if (!player)
+			return;
+
+		PlayZAntiCheatPlayerState state = EnsureState(player);
+		if (!state)
+			return;
+
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		int graceSeconds = Math.Max(cfg.EngineTeleportGraceSeconds, 0);
+		float now = GetGame().GetTime();
+		state.EngineTeleportGraceUntil = now + graceSeconds * 1000;
+		ResetMovementCounters(state);
+		ResetMovementBaselines(state, player.GetPosition(), player.GetPosition(), now);
 	}
 
 	void OnPlayerDisconnected(PlayerIdentity identity)
@@ -125,9 +230,6 @@ class PlayZAntiCheatPlayerMonitor
 		return true;
 	}
 
-	// Player states where the camera legitimately separates from the body origin
-	// (vehicle cockpit pivot, swim pose, restrain anim, etc.). Sampling here
-	// produces noise, not signal, so we skip instead of risk a false alert.
 	protected bool IsPlayerInCameraSafeState(PlayerBase player)
 	{
 		if (!player)
@@ -145,14 +247,51 @@ class PlayZAntiCheatPlayerMonitor
 		return false;
 	}
 
+	protected bool IsPlayerInMovementSafeState(PlayerBase player, float now, PlayZAntiCheatPlayerState state)
+	{
+		if (IsPlayerInCameraSafeState(player))
+			return true;
+		if (player.IsClimbing())
+			return true;
+		if (player.IsClimbingLadder())
+			return true;
+		if (player.HasActiveTerjeStartScreen())
+			return true;
+		if (state && state.SpawnGraceUntil > now)
+			return true;
+		if (state && state.StartScreenExitGraceUntil > now)
+			return true;
+		if (state && state.EngineTeleportGraceUntil > now)
+			return true;
+
+		vector playerPos = player.GetPosition();
+		if (IsSpawnMenuSentinelPosition(playerPos))
+			return true;
+
+		return false;
+	}
+
+	protected bool NeedsSpotCheckRpc()
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		if (cfg.EnableCameraChecks)
+			return true;
+		if (cfg.EnableSpeedChecks)
+			return true;
+		if (cfg.EnableTeleportChecks)
+			return true;
+		return false;
+	}
+
 	void RequestSamples()
 	{
 		if (!GetGame() || !GetGame().IsServer())
 			return;
 
-		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
-		if (!cfg.EnableCameraChecks)
+		if (!NeedsSpotCheckRpc())
 			return;
+
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
 
 		m_PlayersBuffer.Clear();
 		GetGame().GetPlayers(m_PlayersBuffer);
@@ -172,40 +311,29 @@ class PlayZAntiCheatPlayerMonitor
 			if (!identity)
 				continue;
 
+			if (PlayZAntiCheatUtils.IsPlayerExcluded(player))
+				continue;
+
 			PlayZAntiCheatPlayerState state = EnsureState(player);
 			if (!state)
 				continue;
 
 			if (state.PendingCameraResponse && state.LastRequestTime > 0 && now - state.LastRequestTime >= responseTimeoutMs)
 			{
-				// Timed-out request is NOT an anomaly — common under lag/disconnect.
-				// Reset the pending flag and schedule a small retry delay.
 				state.PendingCameraResponse = false;
 				state.NextCheckTime = now + 1000;
 			}
 
-			if (IsPlayerInCameraSafeState(player))
+			if (IsPlayerInMovementSafeState(player, now, state))
 			{
 				state.PendingCameraResponse = false;
 				state.NextCheckTime = now + interval;
 				continue;
 			}
-
-			vector playerPos = player.GetPosition();
-			if (IsSpawnMenuSentinelPosition(playerPos))
-			{
-				state.PendingCameraResponse = false;
-				state.NextCheckTime = now + interval;
-				continue;
-			}
-
-			if (state.SpawnGraceUntil > now)
-				continue;
 
 			if (state.NextCheckTime > now)
 				continue;
 
-			// Stagger the next check by adding a small jitter (+/- 10% of interval, capped at 2s)
 			int jitter = Math.RandomInt(-(interval * 0.1), (interval * 0.1));
 			jitter = Math.Clamp(jitter, -2000, 2000);
 
@@ -219,19 +347,6 @@ class PlayZAntiCheatPlayerMonitor
 		}
 	}
 
-	// cameraPos and clientPlayerPos are both client-side snapshots taken in the
-	// SAME frame -> their delta is immune to RTT. We use that delta for the
-	// anomaly verdict. serverPlayerPos (captured here, now) is used only as a
-	// sanity bound: if the client-reported position disagrees with the server
-	// by more than CameraMaxServerDriftMeters, we ignore the sample rather than
-	// trust it and risk either false-positive (lag) or false-negative (spoof).
-	//
-	// flags is a bitfield (PLAYZ_AC_CAMERA_FLAG_*) populated client-side:
-	//   PLAYZ_AC_CAMERA_FLAG_DETACHED -> a non-player Camera instance is
-	//   rendering (admin freecam, spectator, cinematic, FreeDebugCamera,
-	//   character-creation / intro). Per engine contract in Camera.c the
-	//   player's own DayZPlayerCamera is NOT a Camera instance, so this
-	//   flag is an authoritative "not a cheat signal, skip the sample".
 	void OnCameraResponse(PlayerBase player, vector cameraPos, vector clientPlayerPos, float clientTime, int flags = 0)
 	{
 		if (!player)
@@ -241,18 +356,16 @@ class PlayZAntiCheatPlayerMonitor
 		if (!identity)
 			return;
 
-		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
-		if (!cfg.EnableCameraChecks)
+		if (PlayZAntiCheatUtils.IsPlayerExcluded(player))
 			return;
 
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
 		PlayZAntiCheatPlayerState state = EnsureState(player);
 		if (!state)
 			return;
 
 		float now = GetGame().GetTime();
 		vector serverPlayerPos = player.GetPosition();
-		float clientSeparation = vector.Distance(clientPlayerPos, cameraPos);
-		float serverClientDrift = vector.Distance(clientPlayerPos, serverPlayerPos);
 
 		state.LastPlayerPosition = serverPlayerPos;
 		state.LastClientPlayerPos = clientPlayerPos;
@@ -260,6 +373,18 @@ class PlayZAntiCheatPlayerMonitor
 		state.LastResponseTime = now;
 		state.PendingCameraResponse = false;
 
+		if (cfg.EnableCameraChecks)
+			EvaluateCameraSample(player, cameraPos, clientPlayerPos, serverPlayerPos, now, state, flags);
+
+		if (cfg.EnableSpeedChecks || cfg.EnableTeleportChecks)
+			EvaluateMovementSample(player, clientPlayerPos, serverPlayerPos, now, state);
+	}
+
+	protected void EvaluateCameraSample(PlayerBase player, vector cameraPos, vector clientPlayerPos, vector serverPlayerPos, float now, PlayZAntiCheatPlayerState state, int flags)
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		float clientSeparation = vector.Distance(clientPlayerPos, cameraPos);
+		float serverClientDrift = vector.Distance(clientPlayerPos, serverPlayerPos);
 		bool isDetachedCamera = (flags & PLAYZ_AC_CAMERA_FLAG_DETACHED) != 0;
 
 		if (state.SpawnGraceUntil > now)
@@ -274,20 +399,12 @@ class PlayZAntiCheatPlayerMonitor
 		if (IsSpawnMenuSentinelPosition(clientPlayerPos))
 			return;
 
-		// Absurdly large deltas are always a transition artifact (loading
-		// screens, intro scenes at <-146, 479, 46>, map-edge teleport bugs)
-		// rather than a cheat signal worth alerting on. Skip silently and
-		// do NOT bump ConsecutiveAnomalies — otherwise a single huge glitch
-		// stays in the counter and primes the next normal sample to alert.
 		if (!isDetachedCamera && cfg.CameraMaxPlausibleSeparation > 0 && clientSeparation > cfg.CameraMaxPlausibleSeparation)
 		{
 			state.ConsecutiveAnomalies = 0;
 			return;
 		}
 
-		// Untrustworthy sample: client's self-reported body is far from where
-		// the server thinks the body is. Could be packet loss, teleport, or
-		// a spoofed position. Either way, don't alert on it.
 		if (cfg.CameraMaxServerDriftMeters > 0 && serverClientDrift > cfg.CameraMaxServerDriftMeters)
 		{
 			state.ConsecutiveAnomalies = 0;
@@ -340,5 +457,186 @@ class PlayZAntiCheatPlayerMonitor
 				return;
 			PlayZAntiCheatWebhookDispatcher.Get().Enqueue(webhook, payload);
 		}
+	}
+
+	protected void EvaluateMovementSample(PlayerBase player, vector clientPlayerPos, vector serverPlayerPos, float now, PlayZAntiCheatPlayerState state)
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+
+		bool inStartScreen = player.HasActiveTerjeStartScreen();
+		if (state.WasInStartScreen && !inStartScreen)
+		{
+			int exitGraceSeconds = Math.Max(cfg.SpeedStartScreenExitGraceSeconds, 0);
+			state.StartScreenExitGraceUntil = now + exitGraceSeconds * 1000;
+			ResetMovementCounters(state);
+			ResetMovementBaselines(state, serverPlayerPos, clientPlayerPos, now);
+		}
+		state.WasInStartScreen = inStartScreen;
+
+		if (state.LastMovementSampleTime <= 0)
+		{
+			ResetMovementBaselines(state, serverPlayerPos, clientPlayerPos, now);
+			return;
+		}
+
+		if (IsPlayerInMovementSafeState(player, now, state))
+		{
+			ResetMovementCounters(state);
+			ResetMovementBaselines(state, serverPlayerPos, clientPlayerPos, now);
+			return;
+		}
+
+		float elapsedMs = now - state.LastMovementSampleTime;
+		if (elapsedMs <= 0)
+		{
+			ResetMovementBaselines(state, serverPlayerPos, clientPlayerPos, now);
+			return;
+		}
+
+		float elapsedSeconds = elapsedMs / 1000.0;
+		float serverDelta = PlayZAntiCheatUtils.HorizontalDistance(serverPlayerPos, state.LastServerSamplePos);
+		float clientDelta = PlayZAntiCheatUtils.HorizontalDistance(clientPlayerPos, state.LastClientSamplePos);
+		float serverClientDrift = vector.Distance(clientPlayerPos, serverPlayerPos);
+
+		ResetMovementBaselines(state, serverPlayerPos, clientPlayerPos, now);
+
+		if (cfg.EnableSpeedChecks)
+			EvaluateSpeedSample(player, serverDelta, elapsedSeconds, now, state);
+
+		if (cfg.EnableTeleportChecks)
+			EvaluateTeleportSample(player, serverDelta, clientDelta, serverClientDrift, now, state);
+	}
+
+	protected void EvaluateSpeedSample(PlayerBase player, float serverDelta, float elapsedSeconds, float now, PlayZAntiCheatPlayerState state)
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		float speed = serverDelta / elapsedSeconds;
+		float threshold;
+
+		if (player.IsSwimming())
+			threshold = cfg.SpeedMaxSwimMps;
+		else if (player.IsInVehicle())
+			threshold = cfg.SpeedMaxVehicleMps;
+		else
+			threshold = cfg.SpeedMaxFootMps;
+
+		if (speed <= threshold)
+		{
+			state.SpeedConsecutiveAnomalies = 0;
+			return;
+		}
+
+		state.SpeedConsecutiveAnomalies = state.SpeedConsecutiveAnomalies + 1;
+
+		int required = Math.Max(cfg.SpeedConsecutiveAnomaliesToAlert, 1);
+		if (state.SpeedConsecutiveAnomalies < required)
+			return;
+
+		state.SpeedConsecutiveAnomalies = 0;
+
+		string playerName = PlayZAntiCheatUtils.GetIdentityName(player);
+		string playerId = PlayZAntiCheatUtils.GetIdentityId(player);
+		string logLine = string.Format("Speed anomaly: %1 (%2) | speed=%3 m/s | threshold=%4 | delta=%5 m | elapsed=%6 s", playerName, playerId, PlayZAntiCheatUtils.FormatFloat(speed, 2), PlayZAntiCheatUtils.FormatFloat(threshold, 1), PlayZAntiCheatUtils.FormatFloat(serverDelta, 2), PlayZAntiCheatUtils.FormatFloat(elapsedSeconds, 2));
+		RaiseMovementDetection(player, "SPEED", ":rotating_light: SPEED ANOMALY!", logLine, serverDelta, 0, now, state, false);
+	}
+
+	protected bool IsTeleportCorroborated(float serverDelta, float clientDelta, PlayZAntiCheatConfig cfg)
+	{
+		if (serverDelta < cfg.TeleportSuspiciousMeters)
+			return false;
+		if (clientDelta < cfg.TeleportSuspiciousMeters)
+			return false;
+		if (serverDelta <= 0)
+			return false;
+
+		float ratio = clientDelta / serverDelta;
+		if (ratio < cfg.TeleportClientCorroborationRatio)
+			return false;
+
+		return true;
+	}
+
+	protected bool ShouldSkipTeleportDesync(float serverDelta, float clientDelta, PlayZAntiCheatConfig cfg)
+	{
+		if (cfg.TeleportDesyncServerDeltaMeters <= 0)
+			return false;
+		if (serverDelta < cfg.TeleportDesyncServerDeltaMeters)
+			return false;
+		if (clientDelta >= cfg.TeleportDesyncMaxClientDeltaMeters)
+			return false;
+		return true;
+	}
+
+	protected void EvaluateTeleportSample(PlayerBase player, float serverDelta, float clientDelta, float serverClientDrift, float now, PlayZAntiCheatPlayerState state)
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+
+		if (cfg.CameraMaxServerDriftMeters > 0 && serverClientDrift > cfg.CameraMaxServerDriftMeters)
+		{
+			ResetMovementCounters(state);
+			state.TeleportConsecutiveAnomalies = 0;
+			return;
+		}
+
+		if (ShouldSkipTeleportDesync(serverDelta, clientDelta, cfg))
+		{
+			state.TeleportConsecutiveAnomalies = 0;
+			return;
+		}
+
+		if (!IsTeleportCorroborated(serverDelta, clientDelta, cfg))
+		{
+			state.TeleportConsecutiveAnomalies = 0;
+			return;
+		}
+
+		bool isCritical = serverDelta >= cfg.TeleportCriticalMeters;
+		if (isCritical)
+		{
+			state.TeleportConsecutiveAnomalies = 0;
+			RaiseMovementDetection(player, "TELEPORT_CRITICAL", ":rotating_light: TELEPORT ANOMALY (CRITICAL)!", string.Format("Teleport anomaly (critical): %1 (%2) | serverDelta=%3 m | clientDelta=%4 m | drift=%5 m", PlayZAntiCheatUtils.GetIdentityName(player), PlayZAntiCheatUtils.GetIdentityId(player), PlayZAntiCheatUtils.FormatFloat(serverDelta, 2), PlayZAntiCheatUtils.FormatFloat(clientDelta, 2), PlayZAntiCheatUtils.FormatFloat(serverClientDrift, 2)), serverDelta, clientDelta, now, state, true);
+			return;
+		}
+
+		state.TeleportConsecutiveAnomalies = state.TeleportConsecutiveAnomalies + 1;
+
+		int required = Math.Max(cfg.TeleportConsecutiveAnomaliesToAlert, 1);
+		if (state.TeleportConsecutiveAnomalies < required)
+			return;
+
+		state.TeleportConsecutiveAnomalies = 0;
+		RaiseMovementDetection(player, "TELEPORT_CONSECUTIVE", ":rotating_light: TELEPORT ANOMALY (CONSECUTIVE)!", string.Format("Teleport anomaly (consecutive): %1 (%2) | serverDelta=%3 m | clientDelta=%4 m | drift=%5 m", PlayZAntiCheatUtils.GetIdentityName(player), PlayZAntiCheatUtils.GetIdentityId(player), PlayZAntiCheatUtils.FormatFloat(serverDelta, 2), PlayZAntiCheatUtils.FormatFloat(clientDelta, 2), PlayZAntiCheatUtils.FormatFloat(serverClientDrift, 2)), serverDelta, clientDelta, now, state, true);
+	}
+
+	protected void RaiseMovementDetection(PlayerBase player, string detectionTag, string embedTitle, string logLine, float serverDelta, float clientDelta, float now, PlayZAntiCheatPlayerState state, bool isTeleport)
+	{
+		if (isTeleport && state.LastMovementAlertTime > 0)
+		{
+			int cooldownMs = Math.Max(PlayZAntiCheatConfig.Get().TeleportAlertCooldownSeconds, 0) * 1000;
+			if (now - state.LastMovementAlertTime < cooldownMs)
+				return;
+		}
+
+		state.LastMovementAlertTime = now;
+		PlayZAntiCheatLogger.Info(logLine);
+
+		string webhook = PlayZAntiCheatUtils.GetMovementWebhookUrl();
+		if (webhook != "")
+		{
+			string playerName = PlayZAntiCheatUtils.GetIdentityName(player);
+			string playerId = PlayZAntiCheatUtils.GetIdentityId(player);
+			ref array<ref PlayZDiscordEmbedField> fields = new array<ref PlayZDiscordEmbedField>();
+			PlayZAntiCheatUtils.AddEmbedField(fields, "Server delta", PlayZAntiCheatUtils.FormatFloat(serverDelta, 2) + " m");
+			if (clientDelta > 0)
+				PlayZAntiCheatUtils.AddEmbedField(fields, "Client delta", PlayZAntiCheatUtils.FormatFloat(clientDelta, 2) + " m");
+			PlayZAntiCheatUtils.AddEmbedField(fields, "Detection", detectionTag);
+
+			string description = string.Format("Player: %1 (%2)", playerName, playerId);
+			string payload = PlayZAntiCheatUtils.BuildWebhookEmbed("PlayZ AntiCheat", embedTitle, description, 0xFFA500, fields);
+			if (payload != "")
+				PlayZAntiCheatWebhookDispatcher.Get().Enqueue(webhook, payload);
+		}
+
+		PlayZAntiCheatKickService.KickPlayer(player, detectionTag);
 	}
 };

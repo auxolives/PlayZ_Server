@@ -5,6 +5,7 @@
 static const string PLAYZ_AC_PROFILE_DIR   = "$profile:PlayZ/";
 static const string PLAYZ_AC_CONFIG_PATH   = PLAYZ_AC_PROFILE_DIR + "AntiCheat.json";
 static const string PLAYZ_AC_LOG_PREFIX    = "[PlayZ AntiCheat]";
+static const string PLAYZ_AC_MOVEMENT_KICK_REASON = "SPEEDHACK SUSPICION REPORTED";
 
 class PlayZAntiCheatConfig
 {
@@ -16,7 +17,7 @@ class PlayZAntiCheatConfig
 	int BallisticMaxObstacleCount = 3;
 	float BallisticRaycastRadius = 0.05;
 	// Max allowed camera->body delta, measured from client-coherent sample.
-	float CameraMaxSeparation = 35.0;
+	float CameraMaxSeparation = 10.0;
 	// If the client-reported player pos disagrees with the server pos by more
 	// than this many meters, treat as a lag glitch / untrusted sample and SKIP
 	// (do not alert). Keeps honest lagging players out of logs without letting
@@ -38,6 +39,32 @@ class PlayZAntiCheatConfig
 	int CameraResponseTimeoutSeconds = 12;
 	string DiscordWebhookUrl = "";
 	string DiscordCameraWebhookUrl = "";
+	// Steam64 IDs (identity.GetPlainId()) skipped by all anti-cheat checks.
+	ref array<string> ExcludedSteamIds64 = new array<string>();
+	// Steam64 IDs skipped by keybind alerts only. Does not affect other checks.
+	// Admins in ExcludedSteamIds64 are skipped for keybind automatically (one-way; not recursive).
+	ref array<string> ExcludedKeybindSteamIds64 = new array<string>();
+	bool EnableSpeedChecks = false;
+	bool EnableTeleportChecks = true;
+	bool EnableMovementKick = true;
+	float SpeedMaxFootMps = 9.0;
+	float SpeedMaxVehicleMps = 100.0;
+	float SpeedMaxSwimMps = 3.5;
+	int SpeedConsecutiveAnomaliesToAlert = 3;
+	float TeleportSuspiciousMeters = 75.0;
+	float TeleportCriticalMeters = 150.0;
+	float TeleportClientCorroborationRatio = 0.75;
+	int TeleportConsecutiveAnomaliesToAlert = 4;
+	int TeleportAlertCooldownSeconds = 60;
+	float TeleportDesyncServerDeltaMeters = 100.0;
+	float TeleportDesyncMaxClientDeltaMeters = 40.0;
+	int EngineTeleportGraceSeconds = 5;
+	int SpeedStartScreenExitGraceSeconds = 5;
+	string DiscordMovementWebhookUrl = "";
+	bool EnableKeybindChecks = true;
+	int KeybindAlertCooldownSeconds = 1;
+	int KeybindMaxPayloadChars = 256;
+	string DiscordKeybindWebhookUrl = "";
 
 	private static ref PlayZAntiCheatConfig s_Instance;
 
@@ -63,6 +90,12 @@ class PlayZAntiCheatConfig
 		}
 
 		JsonFileLoader<PlayZAntiCheatConfig>.JsonLoadFile(PLAYZ_AC_CONFIG_PATH, this);
+
+		if (!ExcludedSteamIds64)
+			ExcludedSteamIds64 = new array<string>();
+
+		if (!ExcludedKeybindSteamIds64)
+			ExcludedKeybindSteamIds64 = new array<string>();
 	}
 
 	void Save()
@@ -92,6 +125,35 @@ class PlayZAntiCheatLogger
 			Print(string.Format("%1 [ERROR] %2", PLAYZ_AC_LOG_PREFIX, message));
 			PrintToRPT(string.Format("%1 [ERROR] %2", PLAYZ_AC_LOG_PREFIX, message));
 		}
+	}
+};
+
+class PlayZAntiCheatKickQueue
+{
+	protected static ref array<string> s_PendingUids;
+
+	static void Enqueue(string uid)
+	{
+		if (uid == "")
+			return;
+
+		if (!s_PendingUids)
+			s_PendingUids = new array<string>();
+
+		if (s_PendingUids.Find(uid) > -1)
+			return;
+
+		s_PendingUids.Insert(uid);
+	}
+
+	static bool Dequeue(out string uid)
+	{
+		if (!s_PendingUids || s_PendingUids.Count() == 0)
+			return false;
+
+		uid = s_PendingUids[0];
+		s_PendingUids.RemoveOrdered(0);
+		return true;
 	}
 };
 
@@ -268,6 +330,76 @@ class PlayZAntiCheatUtils
 				return identity.GetId();
 		}
 		return "Unknown";
+	}
+
+	static string GetSteamId64(Man player)
+	{
+		if (player)
+		{
+			PlayerIdentity identity = player.GetIdentity();
+			if (identity)
+				return identity.GetPlainId();
+		}
+		return "";
+	}
+
+	static bool IsPlayerExcluded(Man player)
+	{
+		ref array<string> excluded = PlayZAntiCheatConfig.Get().ExcludedSteamIds64;
+		if (!excluded || excluded.Count() == 0)
+			return false;
+
+		string steam64 = GetSteamId64(player);
+		if (steam64 == "")
+			return false;
+
+		return excluded.Find(steam64) > -1;
+	}
+
+	static bool IsPlayerKeybindExcluded(Man player)
+	{
+		// Global admin exclusion covers keybind — no need to duplicate Steam64 in both arrays.
+		if (IsPlayerExcluded(player))
+			return true;
+
+		ref array<string> excluded = PlayZAntiCheatConfig.Get().ExcludedKeybindSteamIds64;
+		if (!excluded || excluded.Count() == 0)
+			return false;
+
+		string steam64 = GetSteamId64(player);
+		if (steam64 == "")
+			return false;
+
+		return excluded.Find(steam64) > -1;
+	}
+
+	static vector FlattenHorizontal(vector value)
+	{
+		value[1] = 0;
+		return value;
+	}
+
+	static float HorizontalDistance(vector a, vector b)
+	{
+		return vector.Distance(FlattenHorizontal(a), FlattenHorizontal(b));
+	}
+
+	static string GetMovementWebhookUrl()
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		string webhook = cfg.DiscordMovementWebhookUrl;
+		if (webhook == "")
+			webhook = cfg.DiscordWebhookUrl;
+		return webhook;
+	}
+
+	static string GetKeybindWebhookUrl()
+	{
+		PlayZAntiCheatConfig cfg = PlayZAntiCheatConfig.Get();
+		string webhook = cfg.DiscordKeybindWebhookUrl;
+		if (webhook == "")
+			webhook = cfg.DiscordWebhookUrl;
+		return webhook;
 	}
 
 	static string FormatFloat(float value, int decimals)
@@ -452,6 +584,9 @@ class PlayZAntiCheatBallisticService
 
 		Man attacker = PlayZAntiCheatUtils.ResolvePlayer(info.GetSource());
 		if (!attacker || attacker == victim)
+			return;
+
+		if (PlayZAntiCheatUtils.IsPlayerExcluded(attacker))
 			return;
 
 		vector attackerPos = attacker.GetPosition();
