@@ -25,6 +25,10 @@ modded class PlayerBase
 		{
 			HandlePlayZACCameraResponse(ctx);
 		}
+		else if (rpc_type == RPC_PLAYZ_AC_KEYBIND_REPORT)
+		{
+			HandlePlayZACKeybindReport(ctx);
+		}
 	}
 
 	protected void HandlePlayZACCameraResponse(ParamsReadContext ctx)
@@ -50,6 +54,18 @@ modded class PlayerBase
 		PlayZAntiCheatPlayerMonitor monitor = PlayZAntiCheatPlayerMonitor.GetInstance();
 		if (monitor)
 			monitor.OnCameraResponse(this, cameraPos, localPlayerPos, clientTime, flags);
+	}
+
+	protected void HandlePlayZACKeybindReport(ParamsReadContext ctx)
+	{
+		if (!GetGame() || !GetGame().IsServer())
+			return;
+
+		string keysPressed;
+		if (!ctx.Read(keysPressed))
+			return;
+
+		PlayZAntiCheatKeybindService.Get().OnKeybindReport(this, keysPressed);
 	}
 
 	override void EEKilled(Object killer)
