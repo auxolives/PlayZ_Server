@@ -50,6 +50,8 @@ Output defaults to `@PlayZ_Server` on the Sakhal CFTools deployment (`MOD_OUT` i
 
   Registry: `$profile:PlayZ/StashDigRegistry.json` — maps **cargo persistent ID** → original burier (Steam64), position, timestamp. Survives restarts; removed on dig-out.
 
+  Dig-out capture hooks `ActionContinuousBase.OnFinishProgress` (not `ActionDigOutStash` directly) so it still runs when `PlayZTerjeSkills` is outer in the mod chain.
+
   Map stash types (all resolved via `IsInherited(UndergroundStash)`):
   - Namalsk → `UndergroundStashSnowNamalsk`
   - Sakhal → `UndergroundStashSnow`
