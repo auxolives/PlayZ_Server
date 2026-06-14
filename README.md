@@ -39,7 +39,30 @@ Output defaults to `@PlayZ_Server` on the Sakhal CFTools deployment (`MOD_OUT` i
 
 ## Current sub-mods
 
-- `PlayZLogs` — server-side telemetry/logging (damage, people, vehicles, weather, base-building, actions, admin, AI engagement).
+- `PlayZLogs` — server-side telemetry/logging (damage, people, vehicles, weather, base-building, actions, admin, AI engagement). Config: `$profile:PlayZ/Log.json`.
+
+  **Stash dig Discord webhook** (optional, separate from AntiCheat). Requires `-servermod` PlayZLogs to load **after** `-mod` PlayZTerjeSkills so dig-out hooks wrap Terje hidden-stash logic via `super`.
+
+  Config (`$profile:PlayZ/Log.json`):
+  - `EnableStashDigDiscord` — post when a player finishes burying or digging up a stash
+  - `DiscordStashWebhookUrl` — dedicated Discord webhook URL
+  - `StashDigRegistryTtlDays` — auto-prune orphaned dig-in records (default **14** days)
+
+  Registry: `$profile:PlayZ/StashDigRegistry.json` — maps **cargo persistent ID** → original burier (Steam64), position, timestamp. Survives restarts; removed on dig-out.
+
+  Map stash types (all resolved via `IsInherited(UndergroundStash)`):
+  - Namalsk → `UndergroundStashSnowNamalsk`
+  - Sakhal → `UndergroundStashSnow`
+  - Chernarus / vanilla dirt → `UndergroundStash`
+
+  **Dig-in embed** (blue): digger, Steam64, cargo ID, cargo type, tool, player position, stash ID/type.
+
+  **Dig-out embed** (color-coded):
+  - Green — same Steam64 as dig-in
+  - Amber — different player (shows original burier + burial time/position)
+  - Gray — no matching dig-in record (TTL expired, pre-feature bury, empty stash)
+
+  Terje Cryptic Burial (hidden stash) is supported; cargo persistent ID is unchanged by mask/unmask.
 - `PlayZAntiCheat` — ballistic, camera, speed, and teleport detection. Requires `PlayZ_Client/PlayZAntiCheatClient` on `-mod=` (RPC stub). Config: `$profile:PlayZ/AntiCheat.json`.
 
   **Discord webhooks (four channels):**

@@ -62,6 +62,13 @@ class PlayZLogConfig
 	int m_DamageHitMinIntervalMs = 0;
 	bool m_DamageHitOmitPlayerCentricRecords = false;
 
+	// Stash dig Discord alerts (ActionDigInStash / ActionDigOutStash). Matches
+	// CFTools Cloud server-log action lines, e.g.
+	// ActionDigInStash DryBag_Orange with Pickaxe (5626.25, 5493.43, 3.55)
+	bool m_EnableStashDigDiscord = false;
+	string m_DiscordStashWebhookUrl = "";
+	int m_StashDigRegistryTtlDays = 14;
+
 	void PlayZLogConfig()
 	{
 	}
@@ -125,5 +132,9 @@ class PlayZLogConfig
 		m_DamageHitMinimalPayload = true;
 		m_DamageHitMinIntervalMs = 0;
 		m_DamageHitOmitPlayerCentricRecords = false;
+
+		m_EnableStashDigDiscord = false;
+		m_DiscordStashWebhookUrl = "";
+		m_StashDigRegistryTtlDays = 14;
 	}
 }

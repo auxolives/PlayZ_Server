@@ -72,6 +72,8 @@ class PlayZLogger
 		m_Config = new PlayZLogConfig();
 		m_Config.Load();
 
+		PlayZStashDigRegistry.Init();
+
 		if (!s_DamageHitLastEmitMs)
 			s_DamageHitLastEmitMs = new map<string, int>();
 	}
@@ -118,6 +120,7 @@ class PlayZLogger
 	static void OnShutdown()
 	{
 		m_IsShutdown = true;
+		PlayZStashDigRegistry.Shutdown();
 		FlushBuffer();
 		FlushPartitionBuffers();
 	}
